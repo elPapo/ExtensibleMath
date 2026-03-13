@@ -1,7 +1,7 @@
 # Extensible Math Functions for C++
 
 ## Abstract
- 
+
 This paper proposes a direction for making standard library mathematical functions
 extensible via a new `std::math` sub-namespace, using `std::math::sqrt` as a
 representative example. No wording is proposed at this stage. The goal is to gauge
@@ -9,66 +9,66 @@ committee appetite for the direction before committing to a full proposal coveri
 the entire `<cmath>` surface.
 
 ---
- 
+
 ## Motivation
- 
+
 ### The Problem
- 
+
 The C++ standard library provides mathematical functions such as `sqrt` and `abs`
 in the `std` namespace. These functions are not customization points: calling
 `std::sqrt(x)` directly bypasses any user-defined overload, even if one exists for
 the type of `x`.
- 
+
 The idiomatic workaround is to enable ADL via a `using` declaration:
- 
+
 ```cpp
 using std::sqrt;
 return sqrt(x);
 ```
- 
+
 This allows a user-defined `sqrt` in the same namespace as `x` to be found via ADL,
 while falling back to `std::sqrt` for built-in types. However, this idiom has a
 critical limitation: it requires a statement, and is therefore unavailable in
 contexts that only accept expressions.
- 
+
 ---
 
 **Constructor member initializer lists:**
- 
+
 ```cpp
 MyType(A aSq, B b, C c)
-    : a(sqrt(aSq)),   // ill-formed: sqrt not found
+    : a(sqrt(aSq)),   // std::sqrt not found through conversion
       b(b),
-      c(abs(c))     // ill-formed: abs not found
+      c(abs(c))     // std::abs not found through conversion
 {}
 ```
- 
+
 The same applies to default member initializers:
- 
+
 ```cpp
 struct Foo {
-    double x = sqrt(v);  // ill-formed: sqrt not found
+    double x = sqrt(v);  // std::sqrt not found through conversion
 };
 ```
- 
+
 **Requires expressions:**
- 
+
 ```cpp
 template<class T>
 concept numeric = requires(T x) {
-    { abs(x) };  // ill-formed for custom types
+    { abs(x) };  // requirement fails
 };
 ```
- 
+
 There are other, less obvious situations where the same limitation applies,
 such as constant expressions (array size from a new-type) and template arguments.
 
 ---
 
 In all of these cases, the programmer faces the same three unsatisfactory choices:
- 
+
 **Option 1: Call `std::` explicitly**
- 
+
 ```cpp
 MyType(A a, B b, C c)
     : a(std::sqrt(a)),  // silently breaks extensibility
@@ -76,15 +76,15 @@ MyType(A a, B b, C c)
       c(std::abs(c))
 {}
 ```
- 
+
 This compiles and works for built-in types, but silently cuts off any user-defined
 overload.
- 
+
 **Option 2: Restructure to allow a statement**
- 
+
 For member initializer lists, this means moving initialization to the constructor
 body:
- 
+
 ```cpp
 MyType(A a, B b, C c)
     : b(b)
@@ -94,26 +94,26 @@ MyType(A a, B b, C c)
     this->c = abs(c);   // loses const and reference member support
 }
 ```
- 
+
 This restores ADL but members can no longer be `const` or
 references, and all members must be default-constructible. Not all contexts can
 be restructured this way at all.
- 
+
 **Option 3: Write boilerplate helper functions**
- 
+
 ```cpp
 template<class T> auto my_sqrt(T&& x) {
     using std::sqrt;
     return sqrt(std::forward<T>(x));
 }
- 
+
 MyType(A a, B b, C c)
     : a(my_sqrt(a)),
       b(b),
       c(my_abs(c))
 {}
 ```
- 
+
 This restores extensibility but requires every author of generic code to write and
 maintain their own dispatch layer; one wrapper per math function, 45+ to be exhaustive.
 The ownership of these wrappers is unclear. Custom numeric-type authors should probably
@@ -122,68 +122,68 @@ cannot rely on this being provided and may need to implement them redundantly to
 range of types. This makes for poor separation of concern.
 
 The existence of multiple widely-used libraries implementing exactly this machinery
-(see Prior Art below) is evidence that there is real use-cases and that the status quo is 
+(see Prior Art below) is evidence that there are real use-cases and that the status quo is 
 encouraging unnecessary duplication.
 
 ---
- 
+
 ### Existing Practice
- 
+
 Multiple independent, widely-used C++ libraries have been confronted with this
 problem and have each arrived at their own workaround.
- 
+
 **mp-units**, **Eigen**, and **Boost.Units** have all independently converged on
 the same core mechanism: bring `std::sqrt` into scope and let ADL do the work.
- 
+
 ```cpp
 using std::sqrt;
 return sqrt(x);
 ```
- 
+
 The surrounding machinery differs:
+
 - mp-units adds an explicit member function check. [[mp-units math implementation]](https://github.com/mpusz/mp-units/blob/b0e72810b983841b260d570b241c52586aa78999/src/core/include/mp-units/framework/representation_concepts.h#L227-L262)
+
 - Eigen wraps the dispatch in a traits struct with SIMD specialisations and relies on
-macros to minimize the duplication between different functions. [[Eigen `sqrt` implementation]](https://gitlab.com/libeigen/eigen/-/blob/master/Eigen/src/Core/MathFunctions.h)
-```cpp
-#define EIGEN_MATHFUNC_IMPL(func, scalar) \
+  macros to minimize the duplication between different functions. [[Eigen `sqrt` implementation]](https://gitlab.com/libeigen/eigen/-/blob/master/Eigen/src/Core/MathFunctions.h)
+  
+  ```cpp
+  #define EIGEN_MATHFUNC_IMPL(func, scalar) \
     Eigen::internal::func##_impl<typename \
     Eigen::internal::global_math_functions_filtering_base<scalar>::type>
-```
+  ```
+
 - Boost.Units applies the pattern to the inner value of a quantity type. [[Boost.Units `sqrt`]](https://github.com/boostorg/units/blob/develop/include/boost/units/cmath.hpp)
 
 But the fundamental approach is identical in all three. This independent convergence on the same pattern
 is strong evidence both that the need is real and that the solution is well-understood, making this a natural candidate for standardization.
- 
+
 - **nholthaus/units** takes a different approach: it provides `units::math::sqrt` which
-calls std::sqrt directly on the underlying scalar value, which means it does not enable
-ADL resolution and thus does not extend to custom underlying types. [[nholthaus/units `math::sqrt`]](https://github.com/nholthaus/units/blob/578ac4ff8b0e96af8d87dd6b20357522038ccbb3/include/units.h#L4645)
- 
+  calls std::sqrt directly on the underlying scalar value, which means it does not enable
+  ADL resolution and thus does not extend to custom underlying types. [[nholthaus/units `math::sqrt`]](https://github.com/nholthaus/units/blob/578ac4ff8b0e96af8d87dd6b20357522038ccbb3/include/units.h#L4645)
 
 ---
- 
+
 ### Existing Code
- 
+
 A large body of existing generic C++ code calls `std::sqrt` directly, either out
 of habit or because the author was unaware of the ADL idiom. This code silently
 fails to work with user-defined types that provide their own `sqrt` and restricts
 the composability of generic code. There is no practical way for users of such
 libraries to fix this without modifying the library itself.
 
-
 ---
- 
+
 ### Teachability
- 
-The `using std::sqrt; sqrt(x);` idiom is specialist knowledge. For instance, it
-does not appear as an explicit recommendation in the C++ Core Guidelines.
-It is not obvious to intermediate C++ programmers. It is easy to get silently wrong.
+
+The `using std::sqrt; sqrt(x);` idiom is specialist knowledge. The [C++ Core Guidelines](https://isocpp.github.io/CppCoreGuidelines/CppCoreGuidelines.html) discuss ADL in the context of operators and `swap`, but do not provide explicit guidance on its application to math functions. An intermediate C++ programmer following the guidelines would have no reason to know this pattern is necessary.
 Calling `std::sqrt(x)` looks correct and compiles cleanly, but breaks extensibility for
 custom types.
- 
+
 The following exchange from [nholthaus/units GitHub issue #39](https://github.com/nholthaus/units/issues/39#issuecomment-270918812)
 is instructive. A user reports that generic algorithms using ADL-found math functions
 do not work with unit types, and the library author responds:
- 
+
 > *"Honestly, I guess I just never use ADL because I pretty much exclusively use
 > fully qualified namespaces in my code, and I didn't put thought into it."*
 
@@ -191,28 +191,143 @@ This should not be surprising. The responsibility of making custom types work
 intuitively should belong to their authors, not to their users.
 It takes conscious effort for a generic library author to anticipate the needs for wrappers
 of hypothetical custom types and explicitly provide support for them.
-rithmetic operators require no such effort: they are defined by the type author and
+Arithmetic operators require no such effort: they are defined by the type author and
 compose transparently in generic code.
 Math functions should be no different.
 
 In the current situation, it is easy to do the wrong thing, and difficult to do the right one.
 
 ---
- 
+
 ### Legacy Types
 
 While it is desirable to change the behaviour with custom types, it is very clear that
-any change in the behaviour of existing code would be unacceptible.
+any change in the behaviour of existing code would be unacceptable.
 This requires a clear definition of which types belong to the legacy domain.
 Today that boundary is straightforward: primitive arithmetic types and
-std::complex specializations. But C++26 introduces std::simd, and future
+`std::complex` specializations. But C++26 introduces `std::simd`, and future
 standards will likely introduce further numeric vocabulary types. Each addition
-makes the legacy boundary harder to define retroactively. Capturing std::simd in the legacy domain
-would also require including <simd>, a substantial header.
-The legacy boundary is still lightweight today; that may not remain true.
-Establishing the extensibility mechanism now is considerably
-easier than doing so after the standard numeric type landscape has grown further.
+makes the legacy boundary harder to define retroactively.
 
+Capturing `std::simd` in the legacy domain would also require including `<simd>`, a substantial header. If extensible math functions were introduced along it in C++26, `std::simd` would not be part of the legacy domain, keeping the scope smaller.
+
+Addressing this now, while the boundary is still clean and lightweight, is considerably simpler than doing so after the standard numeric type landscape has grown further and users have created code that cement the status quo for new types.
+
+---
+
+## Proposed Direction
+
+We propose the introduction of a `std::math` sub-namespace containing ADL-aware
+wrappers for `<cmath>` functions. For concision, we will be using `sqrt` as the representative example in this section.
+
+The proposed implementation for `std::math::sqrt` is intentionally simple:
+
+```cpp
+namespace std::math
+{
+
+template <typename T>
+auto sqrt(T&& x)
+{
+    if constexpr (requires { std::forward<T>(x).sqrt(); })
+		return std::forward<T>(x).sqrt();
+	else if constexpr (requires { sqrt(std::forward<T>(x)); }) // ADL only, no std in scope
+		return sqrt(std::forward<T>(x));
+	else
+		return std::sqrt(std::forward<T>(x));
+}
+
+} // namespace std::math
+```
+
+The dispatch priority is:
+
+1. Member function `x.sqrt()` — unambiguous, not subject to ADL conflicts
+2. Free function found via ADL in the type's own namespace
+3. `std::sqrt` as the final fallback for all legacy types
+
+The explicit `if constexpr` chain is preferred over a simpler `using namespace std; return sqrt(x);` approach because it separates ADL lookup from `std::sqrt` lookup into distinct steps. This prevents ambiguity for types with multiple implicit conversions to different numeric types: ADL is checked first without `std` in scope, and `std::sqrt` only participates if no ADL candidate is found.
+
+---
+
+### Preserving Legacy Behaviour
+ 
+With this fixture in its own namespace, the legacy behaviour would be preserved, but
+to extend the benefits of this approach to code calling `std::sqrt` directly,
+we additionally propose a compatibility forwarding layer in `namespace std`:
+ 
+```cpp
+namespace std {
+ 
+template<class T>
+concept legacy_sqrt_domain =
+    std::convertible_to<T, float>
+    || std::convertible_to<T, double>
+    || std::convertible_to<T, long double>
+    || std::convertible_to<T, std::complex<float>>
+    || std::convertible_to<T, std::complex<double>>
+    || std::convertible_to<T, std::complex<long double>>;
+ 
+// Only if the legacy path cannot handle the type,
+// forward to the extensible layer.
+template<class T>
+auto sqrt(T&& x)
+    requires (!legacy_sqrt_domain<T>)
+{
+    return math::sqrt(std::forward<T>(x));
+}
+ 
+} // namespace std
+```
+ 
+This ensures that:
+ 
+- All types that worked with `std::sqrt` before continue to work unchanged.
+- New types outside the legacy domain automatically benefit from the extensible path
+  when calling either `std::sqrt` or `std::math::sqrt`.
+- Generic code using `std::sqrt` with templated types now works with custom types defining
+a custom `sqrt` implementation as a member or discoverable via ADL.
+
+> Note that the behaviour is different whether `std::sqrt` or `std::math::sqrt` is called.
+> - `std::sqrt` is legacy first: only calls that could not be handled by `std::sqrt` previously are candidates for user-defined implementation of `sqrt`.
+> - `std::math::sqrt` is customization first, falling back to `std::sqrt` only if no custom implementation of `sqrt` is found.
+ 
+A proof of concept compiling under GCC, Clang, and MSVC is available at:
+https://godbolt.org/z/KnnYYdq8q
  
 ---
  
+## Scope of This Proposal
+ 
+This paper deliberately addresses only `std::math::sqrt` as a proof of concept.
+The full set of `<cmath>` functions that would eventually need `std::math::`
+equivalents includes and is not limited to:
+ 
+| Category | Functions |
+|---|---|
+| Power / root | `sqrt`, `cbrt`, `pow`, `hypot` |
+| Exponential / logarithmic | `exp`, `exp2`, `expm1`, `log`, `log2`, `log10`, `log1p` |
+| Trigonometric | `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2` |
+| Hyperbolic | `sinh`, `cosh`, `tanh`, `asinh`, `acosh`, `atanh` |
+| Rounding | `ceil`, `floor`, `trunc`, `round`, `nearbyint`, `rint` |
+| Absolute value / sign | `abs`, `fabs`, `copysign`, `signbit` |
+| Floating point | `fmod`, `remainder`, `fma`, `fdim`, `fmax`, `fmin` |
+| Classification | `isfinite`, `isinf`, `isnan`, `isnormal`, `fpclassify` |
+ 
+ 
+The following are explicitly out of scope for this paper at this stage:
+ 
+- A complete `std::math` namespace covering all `<cmath>` functions
+- Any changes to the existing `std::sqrt` observable behaviour for types in the
+  legacy domain
+ 
+---
+ 
+## References
+ 
+- mp-units math dispatch implementation: https://github.com/mpusz/mp-units/blob/b0e72810b983841b260d570b241c52586aa78999/src/core/include/mp-units/framework/representation_concepts.h#L227-L262
+- nholthaus/units library: https://github.com/nholthaus/units
+- nholthaus/units issue #39 (ADL and math functions): https://github.com/nholthaus/units/issues/39
+- Eigen math function implementation: https://gitlab.com/libeigen/eigen/-/blob/master/Eigen/src/Core/MathFunctions.h
+- Boost.Units sqrt implementation: https://github.com/boostorg/units/blob/develop/include/boost/units/cmath.hpp
+- Proof of concept implementation: https://godbolt.org/z/KnnYYdq8q
