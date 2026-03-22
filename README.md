@@ -122,7 +122,7 @@ cannot rely on this being provided and may need to implement them redundantly to
 range of types. This makes for poor separation of concern.
 
 The existence of multiple widely-used libraries implementing exactly this machinery
-(see Prior Art below) is evidence that there are real use-cases and that the status quo is 
+(see Existing Practice below) is evidence that there are real use-cases and that the status quo is 
 encouraging unnecessary duplication.
 
 ---
