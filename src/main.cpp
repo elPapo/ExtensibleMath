@@ -32,19 +32,19 @@ namespace mylib
         double v;
         constexpr ScalarWithMember sqrt() const
         {
+			// std::cout is not constexpr
             if consteval
             {
                 return {v / 2.f}; // dummy constexpr sqrt implementation
             }
             std::cout << "ScalarWithMember::sqrt\n";
-            return {std::sqrt(v)}; // dummy sqrt
+            return {std::sqrt(v)};
         }
     };
 }
 
 // ------------------------------------------------
-// A legacy third-party type we cannot modify
-// We opt it in to the compatibility layer
+// A custom type
 // ------------------------------------------------
 namespace bigmath
 {
@@ -57,12 +57,28 @@ namespace bigmath
     constexpr bigint sqrt(bigint x) { return {x.v / 2}; }
 }
 
+// Legacy generic function: calls std::sqrt directly.
+// Cannot be modified. Represents any library code
+// that was written without extensibility in mind.
+template<typename T>
+T length(T x, T y)
+{
+    // should be using namesapce std;
+    // return sqrt(x*x + y*y);
+    // but easy mistake to make:
+    return std::sqrt(x*x + y*y);
+}
+
+// calling length with bigmath::bigint would have failed
+// but now we can choose to opt bigmath::bigint in for
+// for custom math functions:
 template<>
 inline constexpr bool std::is_math_extensible<bigmath::bigint> = true;
 
 // ------------------------------------------------
-// A type that is ambiguous between ADL and std::
-// to illustrate the explicit if constexpr dispatch
+// A type that is ambiguous between ADL and conversion
+// to double usable with std::sqrt to illustrate the
+// explicit if constexpr dispatch
 // ------------------------------------------------
 struct AmbiguousType
 {
@@ -81,8 +97,7 @@ double sqrt(AmbiguousType x)
 }
 
 // ------------------------------------------------
-// Concept correctness: std::math::sqrt is
-// SFINAE-friendly thanks to the CPO design
+// Checking concept correctness:
 // ------------------------------------------------
 template<class T>
 concept has_sqrt = requires(T x)
@@ -113,28 +128,18 @@ int main()
 
     // ---- Legacy compatibility layer ----
 
+    bigmath::bigint a{3};
+    bigmath::bigint b{4};
+	
     // bigmath::bigint opts in via is_math_extensible,
     // so std::sqrt forwards to bigmath::sqrt
-    bigmath::bigint a{9};
-    std::sqrt(a);
-
-    // ---- Generic code illustration ----
-
-    // Without ExtMath.h, this would call std::sqrt directly
-    // and fail for bigmath::bigint
-    auto length = [](auto x, auto y)
-    {
-        // should be: using std::sqrt; return sqrt(...)
-        // but the easy mistake is:
-        return std::sqrt(x*x + y*y); // fails for bigmath::bigint without ExtMath.h
-    };
-
-    bigmath::bigint b{3}, c{4};
-    length(b, c);
+	// Now this works:
+    length(a, b);
 
     // ---- Subtle: ambiguous type ----
 
     // std::sqrt prefers legacy: conversion to double wins
+	// ensuring no change in behaviour of existing code.
     std::sqrt(AmbiguousType{2.0});
 
     // std::math::sqrt prefers ADL: free function wins

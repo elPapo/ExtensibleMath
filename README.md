@@ -383,7 +383,7 @@ The two paths have deliberately different behaviour:
 
 
 A proof of concept compiling under GCC, Clang, and MSVC is available at:
-https://godbolt.org/z/rhn1noM9P
+https://godbolt.org/z/xbqq31GM4
  
 ---
  
@@ -420,4 +420,4 @@ The following are explicitly out of scope for this paper at this stage:
 - nholthaus/units issue #39 (ADL and math functions): https://github.com/nholthaus/units/issues/39
 - Eigen math function implementation: https://gitlab.com/libeigen/eigen/-/blob/master/Eigen/src/Core/MathFunctions.h
 - Boost.Units sqrt implementation: https://github.com/boostorg/units/blob/develop/include/boost/units/cmath.hpp
-- Proof of concept implementation: https://godbolt.org/z/rhn1noM9P
+- Proof of concept implementation: https://godbolt.org/z/xbqq31GM4
