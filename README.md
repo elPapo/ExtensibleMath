@@ -220,42 +220,111 @@ Addressing this now, while the boundary is still clean and lightweight, is consi
 We propose the introduction of a `std::math` sub-namespace containing ADL-aware
 wrappers for `<cmath>` functions. For concision, we will be using `sqrt` as the representative example in this section.
 
-The proposed implementation for `std::math::sqrt` is intentionally simple:
+### `std::math::sqrt` as a Customization Point Object
+ 
+Rather than a plain function template, `std::math::sqrt` is proposed as a
+Customization Point Object (CPO) — a `constexpr` global function object whose
+`operator()` performs the dispatch. This design, established by the Ranges library
+(`std::ranges::begin`, `std::ranges::swap` etc.), offers these two advantages:
+ 
+- The CPO cannot be found by ADL on user types, since it is an object rather than
+  a function. Calling `std::math::sqrt(x)` always invokes the CPO's `operator()`
+  explicitly, preventing accidental interception.
+- The `operator()` can be constrained, making the CPO SFINAE-friendly and allowing
+  it to be used correctly inside `requires` expressions and concepts.
+ 
 
+The proposed implementation:
+ 
 ```cpp
-namespace std::math
-{
-
-template <typename T>
-auto sqrt(T&& x)
-{
-    if constexpr (requires { std::forward<T>(x).sqrt(); })
-		return std::forward<T>(x).sqrt();
-	else if constexpr (requires { sqrt(std::forward<T>(x)); }) // ADL only, no std in scope
-		return sqrt(std::forward<T>(x));
-	else
-		return std::sqrt(std::forward<T>(x));
+namespace std::math {
+ 
+namespace __sqrt {
+ 
+    // Poison pill: prevents unqualified ADL calls from accidentally
+    // finding std::math::sqrt during concept checking
+    void sqrt(auto) = delete;
+ 
+    template<class T>
+    concept has_member_sqrt = requires(T&& x)
+    {
+        std::forward<T>(x).sqrt();
+    };
+ 
+    template<class T>
+    concept has_adl_sqrt = !has_member_sqrt<T> && requires(T&& x)
+    {
+        sqrt(std::forward<T>(x)); // ADL only; poison pill blocks std::math::sqrt
+    };
+ 
+    template<class T>
+    concept has_std_sqrt = !has_member_sqrt<T> && !has_adl_sqrt<T> && requires(T&& x)
+    {
+        std::sqrt(std::forward<T>(x));
+    };
+ 
+    struct __fn
+    {
+        template<class T>
+        requires has_member_sqrt<T>
+              || has_adl_sqrt<T>
+              || has_std_sqrt<T>
+        constexpr auto operator()(T&& x) const
+        {
+            if constexpr (has_member_sqrt<T>)
+                return std::forward<T>(x).sqrt();       // member customization
+            else if constexpr (has_adl_sqrt<T>)
+                return sqrt(std::forward<T>(x));        // ADL
+            else
+                return std::sqrt(std::forward<T>(x));   // std fallback
+        }
+    };
+ 
+} // namespace __sqrt
+ 
+inline namespace __cpo {
+    inline constexpr __sqrt::__fn sqrt{};
 }
-
+ 
 } // namespace std::math
 ```
 
-The dispatch priority is:
+The dispatch priority is explicitly:
 
 1. Member function `x.sqrt()` — unambiguous, not subject to ADL conflicts
 2. Free function found via ADL in the type's own namespace
 3. `std::sqrt` as the final fallback for all legacy types
 
-The explicit `if constexpr` chain is preferred over a simpler `using namespace std; return sqrt(x);` approach because it separates ADL lookup from `std::sqrt` lookup into distinct steps. This prevents ambiguity for types with multiple implicit conversions to different numeric types: ADL is checked first without `std` in scope, and `std::sqrt` only participates if no ADL candidate is found.
+
+The explicit separation of ADL and `std::sqrt` lookup into distinct steps also
+prevents ambiguity for types with multiple implicit conversions: ADL is checked
+first, and `std::sqrt` only participates if no ADL candidate is found.
+ 
+The three concepts `has_member_sqrt`, `has_adl_sqrt`, and `has_std_sqrt` make the
+CPO properly SFINAE-friendly. A `requires` expression such as:
+ 
+```cpp
+template<class T>
+concept has_sqrt = requires(T x) {
+    std::math::sqrt(x);
+};
+```
+ 
+correctly evaluates to `false` for types that support none of the three dispatch
+paths, rather than always appearing satisfied as an unconstrained function template
+would.
 
 ---
 
 ### Preserving Legacy Behaviour
  
-With this fixture in its own namespace, the legacy behaviour would be preserved, but
+With this fixture in its own namespace, the legacy behaviour would be preserved safely, but
 to extend the benefits of this approach to code calling `std::sqrt` directly,
-we additionally propose a compatibility forwarding layer in `namespace std`:
+we additionally propose an opt-in compatibility forwarding layer in `namespace std`.
+This compatibility layer prioritizes maintaining the legacy behaviour, ensuring legacy code
+doesn't change behaviour while allowing custom types where safely possible :
  
+
 ```cpp
 namespace std {
  
@@ -268,11 +337,17 @@ concept legacy_sqrt_domain =
     || std::convertible_to<T, std::complex<double>>
     || std::convertible_to<T, std::complex<long double>>;
  
-// Only if the legacy path cannot handle the type,
-// forward to the extensible layer.
+// Opt-in trait for the compatibility forwarding layer.
+// Users specialise this for their own types.
 template<class T>
-auto sqrt(T&& x)
+inline constexpr bool is_math_extensible = false;
+ 
+// Forward to the extensible layer for opted-in types
+// outside the legacy domain.
+template<class T>
+constexpr auto sqrt(T&& x) -> decltype(math::sqrt(std::forward<T>(x)))
     requires (!legacy_sqrt_domain<T>)
+          && is_math_extensible<std::remove_cvref_t<T>>
 {
     return math::sqrt(std::forward<T>(x));
 }
@@ -280,20 +355,35 @@ auto sqrt(T&& x)
 } // namespace std
 ```
  
-This ensures that:
+A typical use case is a custom numeric type used with an existing library that
+calls `std::sqrt` directly and cannot be modified:
  
-- All types that worked with `std::sqrt` before continue to work unchanged.
-- New types outside the legacy domain automatically benefit from the extensible path
-  when calling either `std::sqrt` or `std::math::sqrt`.
-- Generic code using `std::sqrt` with templated types now works with custom types defining
-a custom `sqrt` implementation as a member or discoverable via ADL.
+```cpp
+// User's custom type, with its own sqrt in its namespace
+namespace mylib {
+    struct Scalar { ... };
+    Scalar sqrt(Scalar x) { ... }
+}
+ 
+// Opt in to the compatibility layer
+template<>
+inline constexpr bool std::is_math_extensible<mylib::Scalar> = true;
+ 
+// Now where std::sqrt(mylib::Scalar{}) is used in the library, it is
+// forwarded to mylib::sqrt via std::math::sqrt
+```
+ 
+The two paths have deliberately different behaviour:
+ 
+- `std::sqrt` is **legacy first**: types in the legacy domain are handled
+  identically to today. Only types outside the legacy domain that have explicitly
+  opted in via `is_math_extensible` are forwarded to the extensible layer.
+- `std::math::sqrt` is **customization first**: member and ADL customizations are
+  preferred, with `std::sqrt` as the fallback. No opt-in is required. 
 
-> Note that the behaviour is different whether `std::sqrt` or `std::math::sqrt` is called.
-> - `std::sqrt` is legacy first: only calls that could not be handled by `std::sqrt` previously are candidates for user-defined implementation of `sqrt`.
-> - `std::math::sqrt` is customization first, falling back to `std::sqrt` only if no custom implementation of `sqrt` is found.
- 
+
 A proof of concept compiling under GCC, Clang, and MSVC is available at:
-https://godbolt.org/z/KnnYYdq8q
+https://godbolt.org/z/rhn1noM9P
  
 ---
  
@@ -330,4 +420,4 @@ The following are explicitly out of scope for this paper at this stage:
 - nholthaus/units issue #39 (ADL and math functions): https://github.com/nholthaus/units/issues/39
 - Eigen math function implementation: https://gitlab.com/libeigen/eigen/-/blob/master/Eigen/src/Core/MathFunctions.h
 - Boost.Units sqrt implementation: https://github.com/boostorg/units/blob/develop/include/boost/units/cmath.hpp
-- Proof of concept implementation: https://godbolt.org/z/KnnYYdq8q
+- Proof of concept implementation: https://godbolt.org/z/rhn1noM9P
