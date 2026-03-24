@@ -1,7 +1,6 @@
 #pragma once
 
 #include <cmath>
-#include <complex>
 
 // It is UB to define anything in std, but this is
 // for demonstration purposes only.
@@ -57,29 +56,15 @@ inline namespace __cpo
 }
 } // namespace math
 
-// ------------------------------------------------
-// Legacy domain rule
-// ------------------------------------------------
-
-// I believe I could only check for convertible to
-// double and that would cover it all, but I want
-// to be explicit for now.
-// This is to preserve legacy behaviour.
-template<class T>
-concept legacy_sqrt_domain =
-    std::convertible_to<T, float>
-    || std::convertible_to<T, double>
-    || std::convertible_to<T, long double>
-    || std::convertible_to<T, std::complex<float>>
-    || std::convertible_to<T, std::complex<double>>
-    || std::convertible_to<T, std::complex<long double>>;
-// if it can convert to an integral type, it can convert
-// to a floating point type too
-
-// Note that I don't test for std::simd for two
-// reasons: I would have to include simd and that's
-// a lot, but also there should not be any legacy
-// code with std::simd since it's C++26.
+// Because existing code calls std::sqrt, we offer
+// an opt-in mechanism to allow per-type extensibility.
+// This is typically useful in a case where a library
+// calls std::sqrt with generic types, which works
+// with float/double/int etc, but not with a
+// user-defined type.
+// Explicitly opting the user-defined type in for math
+// extensibility forwards it to std::math::sqrt where
+// user-defined overloads are allowed.
 
 template<class T>
 inline constexpr bool is_math_extensible = false;
@@ -88,12 +73,11 @@ inline constexpr bool is_math_extensible = false;
 // Compatibility forwarding layer
 // ------------------------------------------------
 
-// Only if the legacy can not handle it, we look
-// for a potential user-defined solution
+// Only if the type is explicitly enabled for it, we 
+// look for a potential user-defined solution
 template<class T>
 constexpr auto sqrt(T&& x) -> decltype(math::sqrt(std::forward<T>(x)))
-    requires (!legacy_sqrt_domain<T>)
-        && is_math_extensible<std::remove_cvref_t<T>>
+    requires is_math_extensible<std::remove_cvref_t<T>>
 {
     return math::sqrt(std::forward<T>(x));
 }

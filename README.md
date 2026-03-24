@@ -70,6 +70,7 @@ In all of these cases, the programmer faces the same three unsatisfactory choice
 **Option 1: Call `std::` explicitly**
 
 ```cpp
+template<typename A, typename B, typename C>
 MyType(A a, B b, C c)
     : a(std::sqrt(a)),  // silently breaks extensibility
       b(b),
@@ -97,7 +98,7 @@ MyType(A a, B b, C c)
 
 This restores ADL but members can no longer be `const` or
 references, and all members must be default-constructible. Not all contexts can
-be restructured this way at all.
+be restructured this way.
 
 **Option 3: Write boilerplate helper functions**
 
@@ -188,7 +189,7 @@ do not work with unit types, and the library author responds:
 > fully qualified namespaces in my code, and I didn't put thought into it."*
 
 This should not be surprising. The responsibility of making custom types work
-intuitively should belong to their authors, not to their users.
+intuitively should belong to their authors, not to their users or third-party.
 It takes conscious effort for a generic library author to anticipate the needs for wrappers
 of hypothetical custom types and explicitly provide support for them.
 Arithmetic operators require no such effort: they are defined by the type author and
@@ -199,26 +200,14 @@ In the current situation, it is easy to do the wrong thing, and difficult to do 
 
 ---
 
-### Legacy Types
-
-While it is desirable to change the behaviour with custom types, it is very clear that
-any change in the behaviour of existing code would be unacceptable.
-This requires a clear definition of which types belong to the legacy domain.
-Today that boundary is straightforward: primitive arithmetic types and
-`std::complex` specializations. But C++26 introduces `std::simd`, and future
-standards will likely introduce further numeric vocabulary types. Each addition
-makes the legacy boundary harder to define retroactively.
-
-Capturing `std::simd` in the legacy domain would also require including `<simd>`, a substantial header. If extensible math functions were introduced along it in C++26, `std::simd` would not be part of the legacy domain, keeping the scope smaller.
-
-Addressing this now, while the boundary is still clean and lightweight, is considerably simpler than doing so after the standard numeric type landscape has grown further and users have created code that cement the status quo for new types.
-
----
-
 ## Proposed Direction
 
 We propose the introduction of a `std::math` sub-namespace containing ADL-aware
-wrappers for `<cmath>` functions. For concision, we will be using `sqrt` as the representative example in this section.
+wrappers for `<cmath>` functions. For concision, we will be using `sqrt` as the
+representative example in this section.
+
+The sub-namespace is introduced to guarantee that existing code is unaffected by
+this change. A compatibility layer for `std::sqrt` is also proposed further down.
 
 ### `std::math::sqrt` as a Customization Point Object
  
@@ -328,15 +317,6 @@ doesn't change behaviour while allowing custom types where safely possible :
 ```cpp
 namespace std {
  
-template<class T>
-concept legacy_sqrt_domain =
-    std::convertible_to<T, float>
-    || std::convertible_to<T, double>
-    || std::convertible_to<T, long double>
-    || std::convertible_to<T, std::complex<float>>
-    || std::convertible_to<T, std::complex<double>>
-    || std::convertible_to<T, std::complex<long double>>;
- 
 // Opt-in trait for the compatibility forwarding layer.
 // Users specialise this for their own types.
 template<class T>
@@ -359,8 +339,20 @@ A typical use case is a custom numeric type used with an existing library that
 calls `std::sqrt` directly and cannot be modified:
  
 ```cpp
+// Generic library using std::sqrt directly
+namespace someLib
+{
+	template<typename T>
+	auto someFunction(T&& someValue}
+	{
+		// some code...
+		return std::sqrt(std::forward<T&&>(someValue));
+	}
+}
+
 // User's custom type, with its own sqrt in its namespace
-namespace mylib {
+namespace mylib
+{
     struct Scalar { ... };
     Scalar sqrt(Scalar x) { ... }
 }
@@ -371,20 +363,46 @@ inline constexpr bool std::is_math_extensible<mylib::Scalar> = true;
  
 // Now where std::sqrt(mylib::Scalar{}) is used in the library, it is
 // forwarded to mylib::sqrt via std::math::sqrt
+
+someLib::someFunction(mylib::Scalar{5.2});	// now works
 ```
  
 The two paths have deliberately different behaviour:
  
-- `std::sqrt` is **legacy first**: types in the legacy domain are handled
-  identically to today. Only types outside the legacy domain that have explicitly
-  opted in via `is_math_extensible` are forwarded to the extensible layer.
+- `std::sqrt` is reserved to opt-in types, ensuring the legacy behaviour
+	is maintained in existing code.
 - `std::math::sqrt` is **customization first**: member and ADL customizations are
   preferred, with `std::sqrt` as the fallback. No opt-in is required. 
 
 
 A proof of concept compiling under GCC, Clang, and MSVC is available at:
-https://godbolt.org/z/xbqq31GM4
+https://godbolt.org/z/8EYss45G1
  
+---
+
+### Alternative implementation
+If [P2806](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2025/p2806r3.html) (do expressions) 
+and [P2826](https://www.open-std.org/jtc1/sc22/wg21/docs/papers/2024/p2826r2.html) (replacement functions) 
+are accepted for C++29, the implementation of `std::math::sqrt` reduces significantly.
+
+The do expression makes the ADL idiom available in expression contexts, and replacement functions provide
+expression-equivalence guarantees. This would allow the entire CPO to be expressed as a single declaration,
+without explicit dispatch concepts or a poison pill.
+The direction proposed here would compose naturally with these future language improvements.
+
+The implementation could become as simple as:
+```cpp
+namespace std::math
+{
+  static constexpr struct
+  {
+    using operator(auto&& x) = (do { using std::sqrt; do_return sqrt(FWD(x)); });
+  } sqrt;
+}
+```
+
+eliminating layers of inlining context.
+
 ---
  
 ## Scope of This Proposal
@@ -420,4 +438,4 @@ The following are explicitly out of scope for this paper at this stage:
 - nholthaus/units issue #39 (ADL and math functions): https://github.com/nholthaus/units/issues/39
 - Eigen math function implementation: https://gitlab.com/libeigen/eigen/-/blob/master/Eigen/src/Core/MathFunctions.h
 - Boost.Units sqrt implementation: https://github.com/boostorg/units/blob/develop/include/boost/units/cmath.hpp
-- Proof of concept implementation: https://godbolt.org/z/xbqq31GM4
+- Proof of concept implementation: https://godbolt.org/z/8EYss45G1
