@@ -326,8 +326,7 @@ inline constexpr bool is_math_extensible = false;
 // outside the legacy domain.
 template<class T>
 constexpr auto sqrt(T&& x) -> decltype(math::sqrt(std::forward<T>(x)))
-    requires (!legacy_sqrt_domain<T>)
-          && is_math_extensible<std::remove_cvref_t<T>>
+    requires is_math_extensible<std::remove_cvref_t<T>>
 {
     return math::sqrt(std::forward<T>(x));
 }
@@ -343,7 +342,7 @@ calls `std::sqrt` directly and cannot be modified:
 namespace someLib
 {
 	template<typename T>
-	auto someFunction(T&& someValue}
+	auto someFunction(T&& someValue)
 	{
 		// some code...
 		return std::sqrt(std::forward<T&&>(someValue));
@@ -369,14 +368,14 @@ someLib::someFunction(mylib::Scalar{5.2});	// now works
  
 The two paths have deliberately different behaviour:
  
-- `std::sqrt` is reserved to opt-in types, ensuring the legacy behaviour
-	is maintained in existing code.
+- `std::sqrt` behaviour is unchanged for all existing types. User-defined types
+that opt-in via `is_math_extensible` are forwarded to the extensible layer.
 - `std::math::sqrt` is **customization first**: member and ADL customizations are
-  preferred, with `std::sqrt` as the fallback. No opt-in is required. 
+  preferred, with `std::sqrt` as the fallback. No opt-in is required.
 
 
 A proof of concept compiling under GCC, Clang, and MSVC is available at:
-https://godbolt.org/z/8EYss45G1
+https://godbolt.org/z/cxYTozPrc
  
 ---
 
@@ -390,13 +389,13 @@ expression-equivalence guarantees. This would allow the entire CPO to be express
 without explicit dispatch concepts or a poison pill.
 The direction proposed here would compose naturally with these future language improvements.
 
-The implementation could become as simple as:
+For illustration purposes, the implementation could become as simple as:
 ```cpp
 namespace std::math
 {
   static constexpr struct
   {
-    using operator(auto&& x) = (do { using std::sqrt; do_return sqrt(FWD(x)); });
+    using operator()(auto&& x) = (do { using std::sqrt; do_return sqrt(std::forward<decltype(x)>(x)); });
   } sqrt;
 }
 ```
@@ -426,8 +425,8 @@ equivalents includes and is not limited to:
 The following are explicitly out of scope for this paper at this stage:
  
 - A complete `std::math` namespace covering all `<cmath>` functions
-- Any changes to the existing `std::sqrt` observable behaviour for types in the
-  legacy domain
+- Any changes to the existing `std::sqrt` observable behaviour for types already handled 
+by existin `std::sqrt` overloads.
  
 ---
  
@@ -438,4 +437,4 @@ The following are explicitly out of scope for this paper at this stage:
 - nholthaus/units issue #39 (ADL and math functions): https://github.com/nholthaus/units/issues/39
 - Eigen math function implementation: https://gitlab.com/libeigen/eigen/-/blob/master/Eigen/src/Core/MathFunctions.h
 - Boost.Units sqrt implementation: https://github.com/boostorg/units/blob/develop/include/boost/units/cmath.hpp
-- Proof of concept implementation: https://godbolt.org/z/8EYss45G1
+- Proof of concept implementation: https://godbolt.org/z/cxYTozPrc

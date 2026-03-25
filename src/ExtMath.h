@@ -21,13 +21,13 @@ namespace __sqrt
     };
 
     template<class T>
-    concept has_adl_sqrt = !has_member_sqrt<T> && requires(T&& x)
+    concept has_adl_sqrt = requires(T&& x)
     {
         sqrt(std::forward<T>(x));
     };
 
     template<class T>
-    concept has_std_sqrt = !has_member_sqrt<T> && !has_adl_sqrt<T> && requires(T&& x)
+    concept has_std_sqrt = requires(T&& x)
     {
         std::sqrt(std::forward<T>(x));
     };
@@ -56,15 +56,11 @@ inline namespace __cpo
 }
 } // namespace math
 
-// Because existing code calls std::sqrt, we offer
-// an opt-in mechanism to allow per-type extensibility.
-// This is typically useful in a case where a library
-// calls std::sqrt with generic types, which works
-// with float/double/int etc, but not with a
-// user-defined type.
-// Explicitly opting the user-defined type in for math
-// extensibility forwards it to std::math::sqrt where
-// user-defined overloads are allowed.
+// Existing code sometimes calls std::sqrt directly with
+//  generic types, which works for float/double/int but
+// not user-defined types.
+// Explicitly opting a type in forwards std::sqrt calls to
+// std::math::sqrt, where user-defined overloads are found.
 
 template<class T>
 inline constexpr bool is_math_extensible = false;
